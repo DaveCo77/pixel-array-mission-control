@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TimerCo DSM | Pixel Array</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&family=Inter:wght@400;600;900&display=swap');
+
+        :root {
+            --brand-bg: #000000;
+            
+            /* Timer States */
+            --time-running: #ffffff;
+            --time-warning: #eab308;
+            --time-overtime: #ef4444;
+            --time-paused: #64748b;
+        }
+
+        body { 
+            background-color: var(--brand-bg); 
+            color: #e2e8f0; 
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 0;
+            overflow: hidden; /* Hide scrollbars for full-screen stage use */
+        }
+
+        /* Monospace for ticking numbers */
+        .font-tech {
+            font-family: 'JetBrains Mono', monospace;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* State Colors and Glows */
+        .stage-display {
+            transition: all 0.3s ease;
+        }
+        .state-running { color: var(--time-running); text-shadow: 0 0 60px rgba(255,255,255,0.1); }
+        .state-warning { color: var(--time-warning); text-shadow: 0 0 80px rgba(234,179,8,0.2); }
+        .state-overtime { color: var(--time-overtime); text-shadow: 0 0 80px rgba(239,68,68,0.4); animation: pulse-red 2s infinite; }
+        .state-paused { color: var(--time-paused); }
+
+        @keyframes pulse-red {
+            0%, 100% { background-color: #000000; }
+            50% { background-color: #1a0505; }
+        }
+    </style>
+
+    <!-- Firebase v8 -->
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+</head>
+<body id="app" class="h-screen w-screen flex flex-col items-center justify-center stage-display relative"
+      :class="[
+          status === 'running' && remainingSeconds <= 0 ? 'state-overtime' : '',
+          status === 'running' && remainingSeconds > 0 && remainingSeconds <= 60 ? 'state-warning' : '',
+          status === 'running' && remainingSeconds > 60 ? 'state-running' : '',
+          status === 'paused' || status === 'stopped' ? 'state-paused' : ''
+      ]">
+
+    <!-- Speaker Name (Top) -->
+    <div class="absolute top-16 text-[4vw] font-black tracking-widest uppercase opacity-70" style="color: inherit;">
+        {{ speakerName || 'WAITING FOR SHOW CALLER...' }}
+    </div>
+
+    <!-- Main Time Display -->
+    <div class="text-[25vw] font-tech font-bold leading-none tracking-tighter" style="color: inherit;">
+        {{ formattedTime }}
+    </div>
+
+    <!-- Flashing Message Alert (Bottom) -->
+    <div v-if="activeMessage" class="absolute bottom-16 bg-yellow-500 text-black px-12 py-6 rounded-2xl text-[4vw] font-black uppercase tracking-wider shadow-[0_0_50px_rgba(234,179,8,0.5)] animate-bounce text-center max-w-[90%]">
+        {{ activeMessage }}
+    </div>
+
+<script>
+    // --- 1. INITIALIZE FIREBASE ---
+const firebaseConfig = {
+  apiKey: "AIzaSyAa_eku03NFVS-BuORZk-LrhHYenliOc2U",
+  authDomain: "stagetimerco.firebaseapp.com",
+  databaseURL: "https://stagetimerco-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "stagetimerco",
+  storageBucket: "stagetimerco.firebasestorage.app",
+  messagingSenderId: "509616370775",
+  appId: "1:509616370775:web:7e7750d74fc30c739f1f12",
+  measurementId: "G-3CE648F5GX"
+};
+    if (!firebase.apps.length) {
+        firebase.initializeApp(firebaseConfig);
+    }
+    const db = firebase.database();
+
+    // --- 2. GET DYNAMIC EVENT ID ---
+    const urlParams = new URLSearchParams(window.location.search);
+    const eventId = urlParams.get('event') || 'demo_sandbox';
+    const timerRef = db.ref('timers/' + eventId);
+
+    const { createApp, ref, computed, onMounted, onUnmounted } = Vue;
+
+    createApp({
+        setup() {
+            const status = ref('stopped'); 
+            const targetTimestamp = ref(0); 
+            const pausedRemaining = ref(0);
+            const now = ref(Date.now());
+            
+            const speakerName = ref('WAITING FOR CONTROL...'); 
+            const activeMessage = ref(''); 
+            
+            let ticker = null;
+
+            const remainingSeconds = computed(() => {
+                if (status.value === 'stopped') return 0;
+                if (status.value === 'paused') return pausedRemaining.value;
+                return Math.ceil((targetTimestamp.value - now.value) / 1000);
+            });
+
+            const formattedTime = computed(() => {
+                const totalSecs = remainingSeconds.value;
+                const isNegative = totalSecs < 0;
+                const absSecs = Math.abs(totalSecs);
+                
+                const hours = Math.floor(absSecs / 3600);
+                const minutes = Math.floor((absSecs % 3600) / 60);
+                const seconds = absSecs % 60;
+
+                let timeStr = hours > 0 
+                    ? `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+                    : `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+
+                return isNegative ? `-${timeStr}` : timeStr;
+            });
+
+            onMounted(() => {
+                // THE FIREBASE LISTENER
+                // Any time the Master Control updates the DB, this triggers instantly.
+                timerRef.on('value', (snapshot) => {
+                    const data = snapshot.val();
+                    if (data) {
+                        status.value = data.status || 'stopped';
+                        targetTimestamp.value = data.targetTimestamp || 0;
+                        pausedRemaining.value = data.pausedRemaining || 0;
+                        speakerName.value = data.speakerName || '';
+                        activeMessage.value = data.activeMessage || '';
+                    }
+                });
+
+                ticker = setInterval(() => { now.value = Date.now(); }, 100);
+            });
+
+            onUnmounted(() => {
+                clearInterval(ticker);
+                timerRef.off(); // Kill listener to prevent memory leaks
+            });
+
+            return {
+                status, speakerName, activeMessage, remainingSeconds, formattedTime
+            }
+        }
+    }).mount('#app')
+</script>
+</body>
+</html>
